@@ -4,6 +4,8 @@ An implementation of the Media over QUIC Transport (MoQT) protocol for live medi
 
 This codebase was originally created by [Luke Curley (@kixelated)](https://github.com/kixelated). [Mike English (@englishm)](https://github.com/englishm) contributed to early design and has maintained this IETF-aligned fork. The project is now maintained by Cloudflare. The implementation targets [draft-ietf-moq-transport-16](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/16/).
 
+> **Lyamc pure-Rust fork:** default members build **without `ring`, without `cc`, and without the `libc` crate on Windows** (pure Quinn + rustls-rustcrypto). See **[PURE_RUST.md](PURE_RUST.md)**. Smoke: `cargo test -p moq-native-ietf --test pure_quic_smoke`.
+
 > **Note:** This repository includes example client and server applications (moq-pub, moq-sub, moq-clock-ietf, moq-relay-ietf) intended to demonstrate usage of the moq-transport library. These are meant for testing and development purposes and have not been optimized for production use.
 
 ## Protocol Support

@@ -28,51 +28,40 @@ moq-native-ietf = { path = "../moq-native-ietf", version = "0.10" }
 moq-api = { path = "../moq-api", version = "0.2" }
 web-transport = { workspace = true }
 
-# QUIC
 url = "2"
 
-# Async stuff
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 futures = "0.3"
 async-trait = "0.1"
 
-# Web server to serve the fingerprint
+# Pure HTTPS fingerprint server (axum + tokio-rustls; no hyper-serve)
 axum = { version = "0.7", features = ["tokio"] }
-hyper-serve = { version = "0.6", features = [
-    "tls-rustls",
-] } # fork of axum-server
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors"] }
 hex = "0.4"
 
-# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# File locking
 fs2 = "0.4"
-
-# Error handling
-anyhow = { version = "1", features = ["backtrace"] }
-
-# CLI
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 
-
-# Logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = "2.0.17"
 
-# Metrics — always compiled in; the metrics crate is effectively zero-cost
-# when no recorder is installed (similar to how the log crate works).
-# The metrics-prometheus feature adds the optional Prometheus exporter.
+rustls-rustcrypto = { path = "../vendor/rustls-rustcrypto" }
+
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", optional = true }
 
 [dev-dependencies]
-# test-util provides the paused-clock runtime used to test idle timeouts without
-# sleeping for real.
 tokio = { version = "1", features = ["full", "test-util"] }
 
 [features]

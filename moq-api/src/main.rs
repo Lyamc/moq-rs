@@ -10,6 +10,8 @@ use server::{Server, ServerConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
+	let _ = rustls::crypto::CryptoProvider::install_default(rustls_rustcrypto::provider());
+
     // Initialize tracing with env filter (respects RUST_LOG environment variable)
     //
     // Logs go to stderr, per convention and to keep stdout clean.

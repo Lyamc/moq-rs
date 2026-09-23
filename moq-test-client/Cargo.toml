@@ -33,4 +33,4 @@ tokio = { version = "1", features = ["full", "time"] }
 clap = { version = "4", features = ["derive", "env"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-anyhow = { version = "1", features = ["backtrace"] }
+anyhow = "1"

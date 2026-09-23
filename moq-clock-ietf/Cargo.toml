@@ -30,7 +30,4 @@ tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-anyhow = { version = "1", features = ["backtrace"] }
-
-# CLOCK STUFF
-chrono = "0.4"
+anyhow = "1"

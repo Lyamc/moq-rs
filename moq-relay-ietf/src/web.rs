@@ -1,5 +1,9 @@
 // SPDX-FileCopyrightText: 2024-2026 Cloudflare Inc., Luke Curley, Mike English and contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
+//
+// Pure-Rust HTTPS fingerprint server: axum + tokio-rustls.
+// (hyper-serve does not build against the workspace hyper-util resolution;
+//  rustls feature-pinning alone is not enough to keep it.)
 
 use std::{net, path::PathBuf, sync::Arc};
 
@@ -10,7 +14,11 @@ use axum::{
     routing::get,
     Router,
 };
-use hyper_serve::tls_rustls::RustlsAcceptor;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder as HyperConnBuilder;
+use hyper_util::service::TowerToHyperService;
+use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 use tower_http::cors::{Any, CorsLayer};
 
 pub struct WebConfig {
@@ -27,17 +35,15 @@ struct WebState {
     mlog_dir: Option<Arc<PathBuf>>,
 }
 
-// Run a HTTP server using Axum
-// TODO remove this when Chrome adds support for self-signed certificates using WebTransport
+/// HTTP(S) helper that serves `/fingerprint` (and optional qlog/mlog) for browsers.
 pub struct Web {
     app: Router,
-    server: hyper_serve::Server<RustlsAcceptor>,
+    bind: net::SocketAddr,
+    tls: Arc<rustls::ServerConfig>,
 }
 
 impl Web {
     pub fn new(config: WebConfig) -> Self {
-        // Get the first certificate's fingerprint.
-        // TODO serve all of them so we can support multiple signature algorithms.
         let fingerprint = config
             .tls
             .fingerprints
@@ -47,45 +53,71 @@ impl Web {
 
         let mut tls = config.tls.server.expect("missing server configuration");
         tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        let tls = hyper_serve::tls_rustls::RustlsConfig::from_config(Arc::new(tls));
 
-        // Create shared state
         let state = WebState {
             fingerprint,
             qlog_dir: config.qlog_dir.map(Arc::new),
             mlog_dir: config.mlog_dir.map(Arc::new),
         };
 
-        // Build router with fingerprint endpoint
         let mut app = Router::new().route("/fingerprint", get(serve_fingerprint));
 
-        // Optionally add qlog serving endpoint
         if state.qlog_dir.is_some() {
             app = app.route("/qlog/:cid", get(serve_qlog));
             tracing::info!("qlog files available at /qlog/:cid");
         }
 
-        // Optionally add mlog serving endpoint
         if state.mlog_dir.is_some() {
             app = app.route("/mlog/:cid", get(serve_mlog));
             tracing::info!("mlog files available at /mlog/:cid");
         }
 
-        // Add state and CORS layer
         let app = app.with_state(state).layer(
             CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods([Method::GET]),
         );
 
-        let server = hyper_serve::bind_rustls(config.bind, tls);
-
-        Self { app, server }
+        Self {
+            app,
+            bind: config.bind,
+            tls: Arc::new(tls),
+        }
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        self.server.serve(self.app.into_make_service()).await?;
-        Ok(())
+        let listener = TcpListener::bind(self.bind).await?;
+        let acceptor = TlsAcceptor::from(self.tls);
+        let app = self.app;
+
+        tracing::info!("HTTPS fingerprint server listening on {}", self.bind);
+
+        loop {
+            let (tcp, remote_addr) = listener.accept().await?;
+            let acceptor = acceptor.clone();
+            let tower_service = app.clone();
+
+            tokio::spawn(async move {
+                let tls_stream = match acceptor.accept(tcp).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::debug!(%remote_addr, error = %e, "TLS accept failed");
+                        return;
+                    }
+                };
+
+                let io = TokioIo::new(tls_stream);
+                let hyper_service =
+                    TowerToHyperService::new(tower_service.into_service());
+
+                if let Err(err) = HyperConnBuilder::new(TokioExecutor::new())
+                    .serve_connection(io, hyper_service)
+                    .await
+                {
+                    tracing::debug!(%remote_addr, error = %err, "HTTPS connection error");
+                }
+            });
+        }
     }
 }
 
@@ -97,20 +129,15 @@ async fn serve_qlog(
     Path(cid): Path<String>,
     State(state): State<WebState>,
 ) -> Result<Vec<u8>, (StatusCode, String)> {
-    // Get qlog directory or return 404
     let qlog_dir = state.qlog_dir.as_ref().ok_or((
         StatusCode::NOT_FOUND,
         "Qlog serving not enabled".to_string(),
     ))?;
 
-    // Strip _server.qlog suffix if present to get the base CID
     let base_cid = cid.strip_suffix("_server.qlog").unwrap_or(&cid);
-
-    // Construct the expected filename
     let filename = format!("{}_server.qlog", base_cid);
     let file_path = qlog_dir.join(&filename);
 
-    // Security: Ensure the path is still within qlog_dir (prevent path traversal)
     let canonical_dir = qlog_dir.canonicalize().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -129,7 +156,6 @@ async fn serve_qlog(
         return Err((StatusCode::FORBIDDEN, "Invalid path".to_string()));
     }
 
-    // Read and return the file
     tokio::fs::read(&canonical_file).await.map_err(|e| {
         (
             StatusCode::NOT_FOUND,
@@ -142,20 +168,15 @@ async fn serve_mlog(
     Path(cid): Path<String>,
     State(state): State<WebState>,
 ) -> Result<Vec<u8>, (StatusCode, String)> {
-    // Get mlog directory or return 404
     let mlog_dir = state.mlog_dir.as_ref().ok_or((
         StatusCode::NOT_FOUND,
         "Mlog serving not enabled".to_string(),
     ))?;
 
-    // Strip _server.mlog suffix if present to get the base CID
     let base_cid = cid.strip_suffix("_server.mlog").unwrap_or(&cid);
-
-    // Construct the expected filename
     let filename = format!("{}_server.mlog", base_cid);
     let file_path = mlog_dir.join(&filename);
 
-    // Security: Ensure the path is still within mlog_dir (prevent path traversal)
     let canonical_dir = mlog_dir.canonicalize().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -174,7 +195,6 @@ async fn serve_mlog(
         return Err((StatusCode::FORBIDDEN, "Invalid path".to_string()));
     }
 
-    // Read and return the file
     tokio::fs::read(&canonical_file).await.map_err(|e| {
         (
             StatusCode::NOT_FOUND,

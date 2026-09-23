@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2024-2026 Cloudflare Inc., Luke Curley, Mike English and contributors
 # SPDX-FileCopyrightText: 2023-2024 Luke Curley and contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Pure-Rust workspace: default Windows build has no ring, no cc, and no libc crate.
 
 [workspace]
 members = [
@@ -13,14 +15,29 @@ members = [
 	"moq-native-ietf",
 	"moq-catalog",
 	"moq-test-client",
+	"vendor/rustls-rustcrypto",
+	"vendor/quinn-proto",
+	"vendor/quinn",
+	"vendor/quinn-udp",
+	"vendor/web-transport-quinn",
+	"vendor/web-transport",
+	"vendor/hyper-serve",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-web-transport = "0.10.4"
+web-transport = { path = "vendor/web-transport", version = "0.10.2" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Use debug symbols in production until things are more stable
 [profile.release]
 debug = true
+
+[patch.crates-io]
+web-transport = { path = "vendor/web-transport" }
+rustls-rustcrypto = { path = "vendor/rustls-rustcrypto" }
+quinn-proto = { path = "vendor/quinn-proto" }
+quinn = { path = "vendor/quinn" }
+quinn-udp = { path = "vendor/quinn-udp" }
+web-transport-quinn = { path = "vendor/web-transport-quinn" }
+hyper-serve = { path = "vendor/hyper-serve" }

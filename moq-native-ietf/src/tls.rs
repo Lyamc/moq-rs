@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2024-2026 Cloudflare Inc., Luke Curley, Mike English and contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
+//
+// O3 pure-Rust patch: rustls-rustcrypto provider, sha2 fingerprints (no ring).
 
 use anyhow::Context;
 use clap::Parser;
-use ring::digest::{digest, SHA256};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::RootCertStore;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path;
@@ -17,29 +19,18 @@ use std::sync::Arc;
 #[group(id = "tls")]
 pub struct Args {
     /// Use the certificates at this path, encoded as PEM.
-    ///
-    /// You can use this option multiple times for multiple certificates.
-    /// The first match for the provided SNI will be used, otherwise the last cert will be used.
-    /// You also need to provide the private key multiple times via `key``.
     #[arg(long = "tls-cert")]
     pub cert: Vec<path::PathBuf>,
 
     /// Use the private key at this path, encoded as PEM.
-    ///
-    /// There must be a key for every certificate provided via `cert`.
     #[arg(long = "tls-key")]
     pub key: Vec<path::PathBuf>,
 
     /// Use the TLS root at this path, encoded as PEM.
-    ///
-    /// This value can be provided multiple times for multiple roots.
-    /// If this is empty, system roots will be used instead
     #[arg(long = "tls-root")]
     pub root: Vec<path::PathBuf>,
 
     /// Danger: Disable TLS certificate verification.
-    ///
-    /// Fine for local development and between relays, but should be used in caution in production.
     #[arg(long = "tls-disable-verify", env = "TLS_DISABLE_VERIFY")]
     pub disable_verify: bool,
 }
@@ -51,32 +42,42 @@ pub struct Config {
     pub fingerprints: Vec<String>,
 }
 
+fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+    // Prefer process-wide default (e.g. o3_tls); else install rustls-rustcrypto.
+    if let Some(p) = rustls::crypto::CryptoProvider::get_default() {
+        return p.clone();
+    }
+    let p = rustls_rustcrypto::provider();
+    match rustls::crypto::CryptoProvider::install_default(p) {
+        Ok(()) => rustls::crypto::CryptoProvider::get_default()
+            .expect("provider just installed")
+            .clone(),
+        Err(existing) => existing,
+    }
+}
+
 impl Args {
     pub fn load(&self) -> anyhow::Result<Config> {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let provider = provider();
         let mut serve = ServeCerts::default();
 
-        // Load the certificate and key files based on their index.
         anyhow::ensure!(
             self.cert.len() == self.key.len(),
             "--tls-cert and --tls-key counts differ"
         );
         for (chain, key) in self.cert.iter().zip(self.key.iter()) {
-            serve.load(chain, key)?;
+            serve.load(chain, key, &provider)?;
         }
 
-        // Create a list of acceptable root certificates.
         let mut roots = RootCertStore::empty();
 
         if self.root.is_empty() {
-            // Add the platform's native root certificates.
             for cert in
                 rustls_native_certs::load_native_certs().context("could not load platform certs")?
             {
-                roots.add(cert).context("failed to add root cert")?;
+                let _ = roots.add(cert);
             }
         } else {
-            // Add the specified root certificates.
             for root in &self.root {
                 let root = fs::File::open(root).context("failed to open root cert file")?;
                 let mut root = io::BufReader::new(root);
@@ -90,13 +91,11 @@ impl Args {
             }
         }
 
-        // Create the TLS configuration we'll use as a client (relay -> relay)
         let mut client = rustls::ClientConfig::builder_with_provider(provider.clone())
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .with_root_certificates(roots)
             .with_no_client_auth();
 
-        // Allow disabling TLS verification altogether.
         if self.disable_verify {
             let noop = NoCertificateVerification(provider.clone());
             client.dangerous().set_certificate_verifier(Arc::new(noop));
@@ -104,7 +103,6 @@ impl Args {
 
         let fingerprints = serve.fingerprints();
 
-        // Create the TLS configuration we'll use as a server (relay <- browser)
         let server = if !self.key.is_empty() {
             Some(
                 rustls::ServerConfig::builder_with_provider(provider)
@@ -130,9 +128,12 @@ struct ServeCerts {
 }
 
 impl ServeCerts {
-    // Load a certificate and cooresponding key from a file
-    pub fn load(&mut self, chain: &path::PathBuf, key: &path::PathBuf) -> anyhow::Result<()> {
-        // Read the PEM certificate chain
+    pub fn load(
+        &mut self,
+        chain: &path::PathBuf,
+        key: &path::PathBuf,
+        provider: &Arc<rustls::crypto::CryptoProvider>,
+    ) -> anyhow::Result<()> {
         let chain = fs::File::open(chain).context("failed to open cert file")?;
         let mut chain = io::BufReader::new(chain);
 
@@ -142,16 +143,16 @@ impl ServeCerts {
 
         anyhow::ensure!(!chain.is_empty(), "could not find certificate");
 
-        // Read the PEM private key
         let mut keys = fs::File::open(key).context("failed to open key file")?;
-
-        // Read the keys into a Vec so we can parse it twice.
         let mut buf = Vec::new();
         keys.read_to_end(&mut buf)?;
 
         let key =
             rustls_pemfile::private_key(&mut Cursor::new(&buf))?.context("missing private key")?;
-        let key = rustls::crypto::ring::sign::any_supported_type(&key)?;
+        let key = provider
+            .key_provider
+            .load_private_key(key)
+            .context("failed to load private key with pure provider")?;
 
         let certified = Arc::new(CertifiedKey::new(chain, key));
         self.list.push(certified);
@@ -159,14 +160,12 @@ impl ServeCerts {
         Ok(())
     }
 
-    // Return the SHA256 fingerprint of our certificates.
     pub fn fingerprints(&self) -> Vec<String> {
         self.list
             .iter()
             .map(|ck| {
-                let fingerprint = digest(&SHA256, ck.cert[0].as_ref());
-                let fingerprint = hex::encode(fingerprint.as_ref());
-                fingerprint
+                let digest = Sha256::digest(ck.cert[0].as_ref());
+                hex::encode(digest)
             })
             .collect()
     }
@@ -174,23 +173,9 @@ impl ServeCerts {
 
 impl ResolvesServerCert for ServeCerts {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        if let Some(name) = client_hello.server_name() {
-            if let Ok(dns_name) = webpki::DnsNameRef::try_from_ascii_str(name) {
-                for ck in &self.list {
-                    // TODO I gave up on caching the parsed result because of lifetime hell.
-                    // If this shows up on benchmarks, somebody should fix it.
-                    let leaf = ck.end_entity_cert().expect("missing certificate");
-                    let parsed = webpki::EndEntityCert::try_from(leaf.as_ref())
-                        .expect("failed to parse certificate");
-
-                    if parsed.verify_is_valid_for_dns_name(dns_name).is_ok() {
-                        return Some(ck.clone());
-                    }
-                }
-            }
-        }
-
-        // Default to the last certificate if we couldn't find one.
+        // Pure path: skip webpki 0.22 (ring). Prefer last cert; SNI-aware matching
+        // can be restored with rustls-webpki if needed.
+        let _ = client_hello.server_name();
         self.list.last().cloned()
     }
 }

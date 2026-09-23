@@ -227,6 +227,8 @@ fn print_tap_result(test_number: usize, result: &TestResult, verbose: bool) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+	moq_native_ietf::install_pure_crypto();
+
     // Initialize tracing with env filter (respects RUST_LOG environment variable)
     // Default to info level, but suppress quinn's verbose output
     //
