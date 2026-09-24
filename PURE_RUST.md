@@ -4,7 +4,7 @@ This fork builds the **full default workspace** without `ring`, without the `cc`
 
 `cargo tree -i libc` and `cargo tree -i cc` are empty for `x86_64-pc-windows-msvc`. `cargo tree -i cc --target all` is empty. `cargo tree -i ring` is empty.
 
-Unix, Apple, and Android targets still link the `libc` crate through Tokio, Mio, socket2, and the Unix half of vendored `quinn-udp` (ancillary UDP data). Those calls are real socket ABI, not a Windows type alias.
+Unix, Apple, and Android targets still link the `libc` crate through Tokio, Mio, socket2, and the Unix half of `quinn-udp` from [Lyamc/quinn](https://github.com/Lyamc/quinn) (ancillary UDP data). Those calls are real socket ABI, not a Windows type alias.
 
 The legacy rustls fork at `C:\Build\rustls-lyamc` is for TLS 1.2 static RSA and CBC. It is not used here. Stock rustls 0.23 with `default-features = false` does not pull `libc` or `cc`. Crypto is `vendor/rustls-rustcrypto` (same role as Graviola: a pure-Rust `CryptoProvider`). Graviola is not required.
 
@@ -73,10 +73,8 @@ cargo check -p hyper-serve   # pure: no ring / no cc
 | Path | Notes |
 |------|--------|
 | `vendor/rustls-rustcrypto` | Pure CryptoProvider + QUIC AES-128-GCM |
-| `vendor/quinn-proto` | Default `rustls-pure` |
-| `vendor/quinn` | Default `rustls-pure` (rcgen stripped from dev-deps) |
-| `vendor/quinn-udp` | `quinn-udp` 0.5.14. Windows uses `std::ffi` instead of the `libc` crate. Unix still depends on `libc`. |
-| `vendor/web-transport-quinn` | Feature `pure` |
+| [Lyamc/quinn](https://github.com/Lyamc/quinn) `a201190d` | Quinn 0.12 with `rustls-pure`. Windows `quinn-udp` uses `std::ffi` instead of the `libc` crate. |
+| `vendor/web-transport-quinn` | Feature `pure`, depends on that Quinn revision |
 | `vendor/web-transport` | Uses pure WT-Quinn |
 
 ## Usage

@@ -16,9 +16,6 @@ members = [
 	"moq-catalog",
 	"moq-test-client",
 	"vendor/rustls-rustcrypto",
-	"vendor/quinn-proto",
-	"vendor/quinn",
-	"vendor/quinn-udp",
 	"vendor/web-transport-quinn",
 	"vendor/web-transport",
 	"vendor/hyper-serve",
@@ -27,6 +24,7 @@ resolver = "2"
 
 [workspace.dependencies]
 web-transport = { path = "vendor/web-transport", version = "0.10.2" }
+quinn = { git = "https://github.com/Lyamc/quinn", rev = "a201190d7b7a5de47168104f03066b608c91dc46", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -36,8 +34,5 @@ debug = true
 [patch.crates-io]
 web-transport = { path = "vendor/web-transport" }
 rustls-rustcrypto = { path = "vendor/rustls-rustcrypto" }
-quinn-proto = { path = "vendor/quinn-proto" }
-quinn = { path = "vendor/quinn" }
-quinn-udp = { path = "vendor/quinn-udp" }
 web-transport-quinn = { path = "vendor/web-transport-quinn" }
 hyper-serve = { path = "vendor/hyper-serve" }

@@ -198,10 +198,7 @@ impl Args {
 /// `Arc`) is sufficient because `Config` is not `Clone` and the wrapper is
 /// invoked exactly once, during [`Endpoint::new`].
 pub type SocketWrapperFn = Box<
-    dyn Fn(Arc<dyn quinn::AsyncUdpSocket>) -> Arc<dyn quinn::AsyncUdpSocket>
-        + Send
-        + Sync
-        + 'static,
+    dyn Fn(Box<dyn quinn::AsyncUdpSocket>) -> Box<dyn quinn::AsyncUdpSocket> + Send + Sync + 'static,
 >;
 
 pub struct Config {
@@ -267,7 +264,7 @@ impl Config {
     /// before it is handed to quinn. See [`SocketWrapperFn`].
     pub fn with_socket_wrapper<F>(mut self, wrapper: F) -> Self
     where
-        F: Fn(Arc<dyn quinn::AsyncUdpSocket>) -> Arc<dyn quinn::AsyncUdpSocket>
+        F: Fn(Box<dyn quinn::AsyncUdpSocket>) -> Box<dyn quinn::AsyncUdpSocket>
             + Send
             + Sync
             + 'static,
@@ -474,15 +471,19 @@ impl Server {
             conn.accept()?
         };
 
-        let handshake = conn
-            .handshake_data()
-            .await?
-            .downcast::<quinn::crypto::rustls::HandshakeData>()
-            .unwrap();
-
-        let alpn = handshake.protocol.context("missing ALPN")?;
-        let alpn = String::from_utf8_lossy(&alpn);
-        let server_name = handshake.server_name.unwrap_or_default();
+        // HandshakeData is Box<dyn Any> and is not Send. Pull the fields out
+        // before the next await so accept_session can be spawned.
+        let (alpn, server_name) = {
+            let handshake = conn
+                .handshake_data()
+                .await?
+                .downcast::<quinn::crypto::rustls::HandshakeData>()
+                .unwrap();
+            let alpn = handshake.protocol.context("missing ALPN")?;
+            let alpn = String::from_utf8_lossy(&alpn).into_owned();
+            let server_name = handshake.server_name.unwrap_or_default();
+            (alpn, server_name)
+        };
 
         tracing::debug!(
             "received QUIC handshake: cid={} ip={} alpn={} server={}",
